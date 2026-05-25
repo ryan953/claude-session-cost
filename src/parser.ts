@@ -10,6 +10,59 @@ import type {
   SessionFile,
 } from "./types.ts";
 
+const WRAPPER_COMMANDS = new Set([
+  "sudo", "env", "time", "nice", "nohup", "command", "exec", "builtin",
+]);
+
+function extractBashCommand(command: string): string {
+  const trimmed = command.trim().replace(/^\(+/, "");
+  const tokens = trimmed.split(/\s+/);
+
+  for (const token of tokens) {
+    if (/^\w+=/.test(token)) continue;
+    if (token.startsWith("-")) continue;
+    if (/^\d+$/.test(token)) continue;
+    const base = token.replace(/^.*\//, "").replace(/[^a-zA-Z0-9._-]/g, "");
+    if (!base) continue;
+    if (WRAPPER_COMMANDS.has(base)) continue;
+    return base;
+  }
+  return "unknown";
+}
+
+function resolveToolName(
+  name: string,
+  input: Record<string, unknown> | undefined
+): string {
+  if (!input) return name;
+  switch (name) {
+    case "Bash":
+      if (input.command) {
+        return `Bash(${extractBashCommand(String(input.command))})`;
+      }
+      break;
+    case "Skill":
+      if (input.skill) return `Skill(${input.skill})`;
+      break;
+    case "ToolSearch":
+      if (input.query) {
+        const q = String(input.query);
+        const selectMatch = q.match(/^select:(.+)/);
+        if (selectMatch) return `ToolSearch(select)`;
+        const first = q.split(/\s+/)[0];
+        return `ToolSearch(${first})`;
+      }
+      break;
+    case "Agent":
+      if (input.subagent_type) return `Agent(${input.subagent_type})`;
+      break;
+    case "SendMessage":
+      if (input.to) return `SendMessage(${input.to})`;
+      break;
+  }
+  return name;
+}
+
 function isRealUserPrompt(entry: TranscriptEntry): entry is UserEntry {
   if (entry.type !== "user") return false;
   const user = entry as UserEntry;
@@ -171,7 +224,8 @@ export async function parseSession(
         const entryTokens = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0);
         const tokensPerCall = toolBlocks.length > 0 ? entryTokens / toolBlocks.length : 0;
         for (const block of toolBlocks) {
-          const name = block.name ?? "unknown";
+          const rawName = block.name ?? "unknown";
+          const name = resolveToolName(rawName, block.input);
           const existing = toolCallsByName.get(name);
           if (existing) {
             existing.count++;
@@ -179,7 +233,7 @@ export async function parseSession(
           } else {
             toolCallsByName.set(name, { count: 1, totalTokens: tokensPerCall });
           }
-          if (name === "Skill" && block.input) {
+          if (rawName === "Skill" && block.input) {
             const skillName = String(block.input.skill ?? "unknown");
             const existingSkill = skillCallsByName.get(skillName);
             if (existingSkill) {
