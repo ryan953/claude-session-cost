@@ -3,7 +3,10 @@ import { classifyTurn } from "./classifier.ts";
 
 const MAX_GAP_MS = 30 * 60 * 1000; // 30 minutes
 
-export function computeMetrics(session: SessionData): SessionMetrics {
+export function computeMetrics(
+  session: SessionData,
+  classifications?: Array<"success" | "retry">
+): SessionMetrics {
   const { turns } = session;
 
   if (turns.length === 0) {
@@ -58,10 +61,14 @@ export function computeMetrics(session: SessionData): SessionMetrics {
   let successTokens = 0;
   let failureTokens = 0;
   for (let i = 0; i < turns.length; i++) {
-    const nextPrompt =
-      i < turns.length - 1 ? turns[i + 1].promptText : null;
     const turnTokens = turns[i].totalInputTokens + turns[i].totalOutputTokens;
-    if (classifyTurn(turns[i].promptText, nextPrompt) === "success") {
+    const classification = classifications
+      ? classifications[i]
+      : classifyTurn(
+          turns[i].promptText,
+          i < turns.length - 1 ? turns[i + 1].promptText : null
+        );
+    if (classification === "success") {
       successCount++;
       successTokens += turnTokens;
     } else {
@@ -90,9 +97,9 @@ export function computeMetrics(session: SessionData): SessionMetrics {
   const avgToolCallsPerTurn = turns.length > 0 ? totalToolCalls / turns.length : 0;
   const avgTokensPerToolCall = totalToolCalls > 0 ? totalTokens / totalToolCalls : 0;
 
-  const iSec = inferenceTimeMs / 1000;
-  const cSec = checkWriteTimeMs / 1000;
-  const successScore = (iSec * cSec) / probability;
+  const avgInferencePerTurn = inferenceTimeMs / 1000 / turns.length;
+  const avgCheckWritePerTurn = checkWriteTimeMs / 1000 / turns.length;
+  const successScore = (avgInferencePerTurn + avgCheckWritePerTurn) / probability;
 
   return {
     sessionId: session.sessionId,

@@ -4,8 +4,9 @@ import { execSync } from "node:child_process";
 import { discoverSessions } from "./discovery.ts";
 import { parseSession } from "./parser.ts";
 import { computeMetrics } from "./metrics.ts";
+import { classifyTurnBatch } from "./classifier.ts";
 import { generateReport } from "./report.ts";
-import type { SessionMetrics, ToolCallStat } from "./types.ts";
+import type { SessionData, SessionMetrics, ToolCallStat } from "./types.ts";
 
 function parseRelativeDate(input: string): Date {
   const match = input.match(/^(\d+)(d|h|m)$/);
@@ -54,6 +55,7 @@ program
   .option("--until <date>", "End date (ISO or relative, default: now)")
   .option("--project <name>", "Filter to project directory (substring match)")
   .option("--exclude <pattern>", "Exclude projects matching pattern (substring, repeatable)", (val: string, prev: string[]) => prev.concat(val), [] as string[])
+  .option("--ai-classify", "Use Claude CLI (Haiku) to classify turns")
   .option("--json", "Output raw JSON instead of HTML report")
   .option("--no-open", "Don't auto-open the HTML report")
   .option("--out <path>", "Output file path", "/tmp/claude-session-cost.html")
@@ -72,15 +74,14 @@ program
     }
     console.log(`Found ${sessionFiles.length} session files. Parsing...`);
 
-    const allMetrics: SessionMetrics[] = [];
+    const parsedSessions: SessionData[] = [];
     const globalToolStats = new Map<string, { count: number; totalTokens: number }>();
     const globalSkillStats = new Map<string, { count: number; totalTokens: number }>();
     for (const sf of sessionFiles) {
       try {
         const session = await parseSession(sf);
         if (session.turns.length === 0) continue;
-        const metrics = computeMetrics(session);
-        allMetrics.push(metrics);
+        parsedSessions.push(session);
         for (const [name, stat] of session.toolCallsByName) {
           const existing = globalToolStats.get(name);
           if (existing) {
@@ -104,9 +105,53 @@ program
       }
     }
 
-    if (allMetrics.length === 0) {
+    if (parsedSessions.length === 0) {
       console.log("No sessions with turns found.");
       return;
+    }
+
+    // Classify turns (AI or heuristic)
+    let classificationsBySession: Map<string, Array<"success" | "retry">> | undefined;
+    if (opts.aiClassify) {
+      const allTurnPairs: Array<{ sessionId: string; currentPrompt: string; nextPrompt: string | null }> = [];
+      for (const session of parsedSessions) {
+        for (let i = 0; i < session.turns.length; i++) {
+          allTurnPairs.push({
+            sessionId: session.sessionId,
+            currentPrompt: session.turns[i].promptText,
+            nextPrompt: i < session.turns.length - 1 ? session.turns[i + 1].promptText : null,
+          });
+        }
+      }
+      console.log(`Classifying ${allTurnPairs.length} turns with AI...`);
+      const allClassifications = await classifyTurnBatch(
+        allTurnPairs.map((t) => ({ currentPrompt: t.currentPrompt, nextPrompt: t.nextPrompt })),
+        (done, total) => {
+          if (process.stdout.isTTY) {
+            process.stdout.clearLine(0);
+            process.stdout.cursorTo(0);
+            process.stdout.write(`  Classified ${done}/${total} turns`);
+          }
+        }
+      );
+      if (process.stdout.isTTY) console.log();
+      console.log(`  Classification complete.`);
+
+      classificationsBySession = new Map();
+      let offset = 0;
+      for (const session of parsedSessions) {
+        classificationsBySession.set(
+          session.sessionId,
+          allClassifications.slice(offset, offset + session.turns.length)
+        );
+        offset += session.turns.length;
+      }
+    }
+
+    const allMetrics: SessionMetrics[] = [];
+    for (const session of parsedSessions) {
+      const classifications = classificationsBySession?.get(session.sessionId);
+      allMetrics.push(computeMetrics(session, classifications));
     }
 
     console.log(`Analyzed ${allMetrics.length} sessions.\n`);

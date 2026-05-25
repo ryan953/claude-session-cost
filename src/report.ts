@@ -59,10 +59,10 @@ export function generateReport(
     sorted.map((s) => Math.round(s.successScore))
   );
   const inferenceTimes = JSON.stringify(
-    sorted.map((s) => Math.round(s.inferenceTimeMs / 1000))
+    sorted.map((s) => +(s.inferenceTimeMs / 60000).toFixed(1))
   );
   const checkWriteTimes = JSON.stringify(
-    sorted.map((s) => Math.round(s.checkWriteTimeMs / 1000))
+    sorted.map((s) => +(s.checkWriteTimeMs / 60000).toFixed(1))
   );
   const probabilities = JSON.stringify(
     sorted.map((s) => Math.round(s.probability * 100))
@@ -196,7 +196,7 @@ export function generateReport(
     <canvas id="successChart"></canvas>
   </div>
   <div class="chart-card">
-    <h3>Time Breakdown: Inference vs Check/Write (seconds)</h3>
+    <h3>Time Breakdown: Inference vs Check/Write (minutes)</h3>
     <canvas id="timeChart"></canvas>
   </div>
   <div class="chart-card">
@@ -325,7 +325,7 @@ new Chart(document.getElementById('timeChart'), {
     plugins: { legend: { position: 'top' } },
     scales: {
       x: { stacked: true, ticks: { maxRotation: 45, font: { size: 10 } } },
-      y: { type: 'logarithmic', stacked: true, title: { display: true, text: 'Seconds (log)' } }
+      y: { type: 'logarithmic', stacked: true, title: { display: true, text: 'Minutes (log)' } }
     }
   }
 });
