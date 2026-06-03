@@ -155,12 +155,12 @@ export function generateReport(
   .chart-card h3 { font-size: 14px; color: var(--text-dim); margin-bottom: 12px; }
   canvas { width: 100% !important; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; padding: 10px 12px; border-bottom: 2px solid var(--border); color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; user-select: none; }
+  th { text-align: left; padding: 10px 12px; border-bottom: 2px solid var(--border); color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; user-select: none; position: sticky; top: 45px; background: var(--surface); z-index: 5; }
   th:hover { color: var(--accent); }
   td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   tr:hover { background: var(--surface); }
-  .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
   .table-wrap h2 { padding: 16px 20px 0; font-size: 16px; }
   nav { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); margin: -24px -24px 24px; padding: 12px 24px; display: flex; gap: 24px; align-items: center; }
   nav a { color: var(--text-dim); text-decoration: none; font-size: 13px; font-weight: 500; transition: color 0.15s; }
