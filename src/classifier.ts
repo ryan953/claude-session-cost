@@ -85,6 +85,11 @@ function getCachePath(): string {
   return join(CACHE_DIR, "classifications.json");
 }
 
+function getSessionCachePath(): string {
+  mkdirSync(CACHE_DIR, { recursive: true });
+  return join(CACHE_DIR, "session-classifications.json");
+}
+
 function loadCache(): Record<string, "success" | "retry"> {
   try {
     return JSON.parse(readFileSync(getCachePath(), "utf-8"));
@@ -95,6 +100,23 @@ function loadCache(): Record<string, "success" | "retry"> {
 
 function saveCache(cache: Record<string, "success" | "retry">): void {
   writeFileSync(getCachePath(), JSON.stringify(cache, null, 2));
+}
+
+interface SessionCacheEntry {
+  mtime: number;
+  classifications: Array<"success" | "retry">;
+}
+
+function loadSessionCache(): Record<string, SessionCacheEntry> {
+  try {
+    return JSON.parse(readFileSync(getSessionCachePath(), "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveSessionCache(cache: Record<string, SessionCacheEntry>): void {
+  writeFileSync(getSessionCachePath(), JSON.stringify(cache));
 }
 
 function cacheKey(current: string, next: string): string {
@@ -145,59 +167,129 @@ function callClaude(prompt: string): Promise<string> {
   });
 }
 
-export async function classifyTurnBatch(
-  turns: Array<{ currentPrompt: string; nextPrompt: string | null }>,
+export interface SessionTurns {
+  sessionId: string;
+  mtime: Date;
+  turns: Array<{ currentPrompt: string; nextPrompt: string | null }>;
+}
+
+export async function classifySessionsBatch(
+  sessions: SessionTurns[],
+  useAi: boolean,
   onProgress?: (done: number, total: number) => void
-): Promise<Array<"success" | "retry">> {
-  const cache = loadCache();
-  const results: Array<"success" | "retry"> = [];
-  const uncached: Array<{ index: number; current: string; next: string }> = [];
+): Promise<Map<string, Array<"success" | "retry">>> {
+  const sessionCache = loadSessionCache();
+  const result = new Map<string, Array<"success" | "retry">>();
 
-  for (let i = 0; i < turns.length; i++) {
-    const { currentPrompt, nextPrompt } = turns[i];
-    if (nextPrompt === null) {
-      results[i] = "success";
-      continue;
-    }
-    const key = cacheKey(currentPrompt, nextPrompt);
-    if (cache[key]) {
-      results[i] = cache[key];
+  const totalTurns = sessions.reduce((s, sess) => s + sess.turns.length, 0);
+  let cachedTurns = 0;
+
+  const uncachedSessions: SessionTurns[] = [];
+
+  for (const session of sessions) {
+    const cached = sessionCache[session.sessionId];
+    if (
+      cached &&
+      cached.mtime === session.mtime.getTime() &&
+      cached.classifications.length === session.turns.length
+    ) {
+      result.set(session.sessionId, cached.classifications);
+      cachedTurns += session.turns.length;
     } else {
-      uncached.push({ index: i, current: currentPrompt, next: nextPrompt });
-      results[i] = "success";
+      uncachedSessions.push(session);
     }
   }
 
-  if (uncached.length === 0) {
-    onProgress?.(turns.length, turns.length);
-    return results;
+  // Initialize results for uncached sessions with heuristic fallback
+  for (const session of uncachedSessions) {
+    const classifications: Array<"success" | "retry"> = session.turns.map((t) =>
+      classifyTurn(t.currentPrompt, t.nextPrompt)
+    );
+    result.set(session.sessionId, classifications);
   }
 
-  const BATCH_SIZE = 8;
-  let done = turns.length - uncached.length;
-
-  for (let b = 0; b < uncached.length; b += BATCH_SIZE) {
-    const batch = uncached.slice(b, b + BATCH_SIZE);
-    const promises = batch.map(async ({ index, current, next }) => {
-      try {
-        const prompt = `CURRENT PROMPT:\n${truncate(current, 300)}\n\nNEXT PROMPT:\n${truncate(next, 300)}`;
-        const text = (await callClaude(prompt)).toLowerCase();
-        const classification: "success" | "retry" =
-          text === "retry" ? "retry" : "success";
-        const key = cacheKey(current, next);
-        cache[key] = classification;
-        results[index] = classification;
-      } catch (err) {
-        console.error(`  AI classify error: ${err}`);
-        results[index] = classifyTurn(current, next);
+  if (!useAi || uncachedSessions.length === 0) {
+    // Heuristic-only: still cache the results for uncached sessions
+    if (uncachedSessions.length > 0) {
+      for (const session of uncachedSessions) {
+        sessionCache[session.sessionId] = {
+          mtime: session.mtime.getTime(),
+          classifications: result.get(session.sessionId)!,
+        };
       }
-    });
-
-    await Promise.all(promises);
-    done += batch.length;
-    onProgress?.(done, turns.length);
+      saveSessionCache(sessionCache);
+    }
+    onProgress?.(totalTurns, totalTurns);
+    return result;
   }
 
-  saveCache(cache);
-  return results;
+  // AI classification for uncached sessions
+  const uncachedTurns: Array<{ sessionId: string; index: number; current: string; next: string }> = [];
+  for (const session of uncachedSessions) {
+    for (let i = 0; i < session.turns.length; i++) {
+      const { currentPrompt, nextPrompt } = session.turns[i];
+      if (nextPrompt !== null) {
+        uncachedTurns.push({
+          sessionId: session.sessionId,
+          index: i,
+          current: currentPrompt,
+          next: nextPrompt,
+        });
+      }
+    }
+  }
+
+  const turnCache = loadCache();
+  const toClassify: Array<{ sessionId: string; index: number; current: string; next: string }> = [];
+
+  for (const turn of uncachedTurns) {
+    const key = cacheKey(turn.current, turn.next);
+    if (turnCache[key]) {
+      result.get(turn.sessionId)![turn.index] = turnCache[key];
+      cachedTurns++;
+    } else {
+      toClassify.push(turn);
+    }
+  }
+
+  let done = cachedTurns;
+  onProgress?.(done, totalTurns);
+
+  if (toClassify.length > 0) {
+    const BATCH_SIZE = 8;
+    for (let b = 0; b < toClassify.length; b += BATCH_SIZE) {
+      const batch = toClassify.slice(b, b + BATCH_SIZE);
+      const promises = batch.map(async (turn) => {
+        try {
+          const prompt = `CURRENT PROMPT:\n${truncate(turn.current, 300)}\n\nNEXT PROMPT:\n${truncate(turn.next, 300)}`;
+          const text = (await callClaude(prompt)).toLowerCase();
+          const classification: "success" | "retry" =
+            text === "retry" ? "retry" : "success";
+          const key = cacheKey(turn.current, turn.next);
+          turnCache[key] = classification;
+          result.get(turn.sessionId)![turn.index] = classification;
+        } catch (err) {
+          console.error(`  AI classify error: ${err}`);
+          result.get(turn.sessionId)![turn.index] = classifyTurn(turn.current, turn.next);
+        }
+      });
+
+      await Promise.all(promises);
+      done += batch.length;
+      onProgress?.(done, totalTurns);
+    }
+
+    saveCache(turnCache);
+  }
+
+  // Update session cache for all uncached sessions
+  for (const session of uncachedSessions) {
+    sessionCache[session.sessionId] = {
+      mtime: session.mtime.getTime(),
+      classifications: result.get(session.sessionId)!,
+    };
+  }
+  saveSessionCache(sessionCache);
+
+  return result;
 }

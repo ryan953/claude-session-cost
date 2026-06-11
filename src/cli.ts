@@ -4,7 +4,8 @@ import { execSync } from "node:child_process";
 import { discoverSessions } from "./discovery.ts";
 import { parseSession } from "./parser.ts";
 import { computeMetrics } from "./metrics.ts";
-import { classifyTurnBatch } from "./classifier.ts";
+import { classifySessionsBatch } from "./classifier.ts";
+import type { SessionTurns } from "./classifier.ts";
 import { generateReport } from "./report.ts";
 import type { SessionData, SessionMetrics, ToolCallStat } from "./types.ts";
 
@@ -72,13 +73,7 @@ program
       console.log("No sessions found in the specified date range.");
       return;
     }
-    const claudeCount = sessionFiles.filter(s => s.source === "claude").length;
-    const cursorCount = sessionFiles.filter(s => s.source === "cursor").length;
-    const sourceSummary = [
-      claudeCount > 0 ? `${claudeCount} Claude` : "",
-      cursorCount > 0 ? `${cursorCount} Cursor` : "",
-    ].filter(Boolean).join(", ");
-    console.log(`Found ${sessionFiles.length} session files (${sourceSummary}). Parsing...`);
+    console.log(`Found ${sessionFiles.length} session files. Parsing...`);
 
     const parsedSessions: SessionData[] = [];
     const globalToolStats = new Map<string, { count: number; totalTokens: number }>();
@@ -116,47 +111,35 @@ program
       return;
     }
 
-    // Classify turns (AI or heuristic)
-    let classificationsBySession: Map<string, Array<"success" | "retry">> | undefined;
-    if (opts.aiClassify) {
-      const allTurnPairs: Array<{ sessionId: string; currentPrompt: string; nextPrompt: string | null }> = [];
-      for (const session of parsedSessions) {
-        for (let i = 0; i < session.turns.length; i++) {
-          allTurnPairs.push({
-            sessionId: session.sessionId,
-            currentPrompt: session.turns[i].promptText,
-            nextPrompt: i < session.turns.length - 1 ? session.turns[i + 1].promptText : null,
-          });
+    // Classify turns — always use cache + heuristic, optionally use AI for uncached
+    const mtimeBySession = new Map(sessionFiles.map((sf) => [sf.sessionId, sf.mtime]));
+    const sessionTurns: SessionTurns[] = parsedSessions.map((session) => ({
+      sessionId: session.sessionId,
+      mtime: mtimeBySession.get(session.sessionId) ?? new Date(0),
+      turns: session.turns.map((t, i) => ({
+        currentPrompt: t.promptText,
+        nextPrompt: i < session.turns.length - 1 ? session.turns[i + 1].promptText : null,
+      })),
+    }));
+    const classifyTurnCount = sessionTurns.reduce((s, st) => s + st.turns.length, 0);
+    console.log(`Classifying ${classifyTurnCount} turns${opts.aiClassify ? " with AI" : ""}...`);
+    const classificationsBySession = await classifySessionsBatch(
+      sessionTurns,
+      !!opts.aiClassify,
+      (done, total) => {
+        if (process.stdout.isTTY) {
+          process.stdout.clearLine(0);
+          process.stdout.cursorTo(0);
+          process.stdout.write(`  Classified ${done}/${total} turns`);
         }
       }
-      console.log(`Classifying ${allTurnPairs.length} turns with AI...`);
-      const allClassifications = await classifyTurnBatch(
-        allTurnPairs.map((t) => ({ currentPrompt: t.currentPrompt, nextPrompt: t.nextPrompt })),
-        (done, total) => {
-          if (process.stdout.isTTY) {
-            process.stdout.clearLine(0);
-            process.stdout.cursorTo(0);
-            process.stdout.write(`  Classified ${done}/${total} turns`);
-          }
-        }
-      );
-      if (process.stdout.isTTY) console.log();
-      console.log(`  Classification complete.`);
-
-      classificationsBySession = new Map();
-      let offset = 0;
-      for (const session of parsedSessions) {
-        classificationsBySession.set(
-          session.sessionId,
-          allClassifications.slice(offset, offset + session.turns.length)
-        );
-        offset += session.turns.length;
-      }
-    }
+    );
+    if (process.stdout.isTTY) console.log();
+    console.log(`  Classification complete.`);
 
     const allMetrics: SessionMetrics[] = [];
     for (const session of parsedSessions) {
-      const classifications = classificationsBySession?.get(session.sessionId);
+      const classifications = classificationsBySession.get(session.sessionId);
       allMetrics.push(computeMetrics(session, classifications));
     }
 
