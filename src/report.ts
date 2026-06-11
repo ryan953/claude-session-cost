@@ -112,7 +112,7 @@ export function generateReport(
       (s) => `
     <tr>
       <td title="${escapeHtml(s.title)}">${escapeHtml(truncate(s.title, 45))}</td>
-      <td>${escapeHtml(s.projectName)}</td>
+      <td>${escapeHtml(s.projectName)}${s.source === "cursor" ? ' <span class="badge badge-cursor">Cursor</span>' : ""}</td>
       <td>${formatDate(s.firstTimestamp)}</td>
       <td class="num">${s.turnCount}</td>
       <td class="num">${s.totalToolCalls}</td>
@@ -160,6 +160,8 @@ export function generateReport(
   td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   tr:hover { background: var(--surface); }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; vertical-align: middle; }
+  .badge-cursor { background: #2a2a3e; color: #8b8bf5; }
   .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
   .table-wrap h2 { padding: 16px 20px 0; font-size: 16px; }
   nav { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); margin: -24px -24px 24px; padding: 12px 24px; display: flex; gap: 24px; align-items: center; }

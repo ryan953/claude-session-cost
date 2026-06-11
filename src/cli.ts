@@ -72,7 +72,13 @@ program
       console.log("No sessions found in the specified date range.");
       return;
     }
-    console.log(`Found ${sessionFiles.length} session files. Parsing...`);
+    const claudeCount = sessionFiles.filter(s => s.source === "claude").length;
+    const cursorCount = sessionFiles.filter(s => s.source === "cursor").length;
+    const sourceSummary = [
+      claudeCount > 0 ? `${claudeCount} Claude` : "",
+      cursorCount > 0 ? `${cursorCount} Cursor` : "",
+    ].filter(Boolean).join(", ");
+    console.log(`Found ${sessionFiles.length} session files (${sourceSummary}). Parsing...`);
 
     const parsedSessions: SessionData[] = [];
     const globalToolStats = new Map<string, { count: number; totalTokens: number }>();

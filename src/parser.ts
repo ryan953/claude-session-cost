@@ -98,7 +98,175 @@ function getUserPromptText(entry: UserEntry): string {
   return "";
 }
 
+function normalizeCursorEntry(raw: Record<string, unknown>): TranscriptEntry | null {
+  const role = raw.role as string | undefined;
+  const message = raw.message as Record<string, unknown> | undefined;
+  if (!role || !message) return null;
+
+  if (role === "user") {
+    const content = message.content;
+    let textContent: string;
+    if (typeof content === "string") {
+      textContent = content;
+    } else if (Array.isArray(content)) {
+      textContent = content
+        .filter((b: Record<string, unknown>) => b.type === "text")
+        .map((b: Record<string, unknown>) => b.text ?? "")
+        .join("\n");
+    } else {
+      return null;
+    }
+    return {
+      type: "user",
+      message: { role: "user", content: textContent },
+    } as UserEntry;
+  }
+
+  if (role === "assistant") {
+    const content = message.content;
+    const contentArray = Array.isArray(content)
+      ? content
+      : typeof content === "string"
+        ? [{ type: "text", text: content }]
+        : [];
+    return {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: contentArray,
+        usage: message.usage as AssistantEntry["message"]["usage"],
+      },
+    } as AssistantEntry;
+  }
+
+  return null;
+}
+
 export async function parseSession(
+  sessionFile: SessionFile
+): Promise<SessionData> {
+  if (sessionFile.source === "cursor") {
+    return parseCursorSession(sessionFile);
+  }
+  return parseClaudeSession(sessionFile);
+}
+
+async function parseCursorSession(sessionFile: SessionFile): Promise<SessionData> {
+  const toolCallsByName = new Map<string, { count: number; totalTokens: number }>();
+  const skillCallsByName = new Map<string, { count: number; totalTokens: number }>();
+  const turns: Turn[] = [];
+  let title = sessionFile.sessionId;
+
+  const rl = createInterface({
+    input: createReadStream(sessionFile.filePath),
+    crlfDelay: Infinity,
+  });
+
+  let turnIndex = 0;
+  let currentTurnToolCalls = 0;
+  let currentTurnAssistantCount = 0;
+  let currentPromptText = "";
+  let inTurn = false;
+
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+
+    let raw: Record<string, unknown>;
+    try {
+      raw = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    const entry = normalizeCursorEntry(raw);
+    if (!entry) continue;
+
+    if (entry.type === "user") {
+      if (inTurn) {
+        turns.push({
+          promptId: `cursor-turn-${turnIndex}`,
+          promptTimestamp: sessionFile.mtime,
+          promptText: currentPromptText,
+          lastAssistantTimestamp: null,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalCacheReadTokens: 0,
+          totalCacheCreateTokens: 0,
+          assistantCount: currentTurnAssistantCount,
+          toolCallCount: currentTurnToolCalls,
+        });
+        turnIndex++;
+      }
+
+      const user = entry as UserEntry;
+      const content = user.message?.content;
+      currentPromptText = typeof content === "string" ? content : "";
+
+      if (turnIndex === 0 && currentPromptText) {
+        const stripped = currentPromptText.replace(/<[^>]+>/g, "").trim();
+        if (stripped.length > 0) {
+          title = stripped.length > 80 ? stripped.slice(0, 77) + "..." : stripped;
+        }
+      }
+
+      currentTurnToolCalls = 0;
+      currentTurnAssistantCount = 0;
+      inTurn = true;
+      continue;
+    }
+
+    if (entry.type === "assistant" && inTurn) {
+      currentTurnAssistantCount++;
+      const assistant = entry as AssistantEntry;
+      const content = assistant.message?.content;
+      if (Array.isArray(content)) {
+        const toolBlocks = content.filter((b) => b.type === "tool_use");
+        currentTurnToolCalls += toolBlocks.length;
+        for (const block of toolBlocks) {
+          const rawName = block.name ?? "unknown";
+          const name = resolveToolName(rawName, block.input);
+          const existing = toolCallsByName.get(name);
+          if (existing) {
+            existing.count++;
+          } else {
+            toolCallsByName.set(name, { count: 1, totalTokens: 0 });
+          }
+        }
+      }
+    }
+  }
+
+  if (inTurn) {
+    turns.push({
+      promptId: `cursor-turn-${turnIndex}`,
+      promptTimestamp: sessionFile.mtime,
+      promptText: currentPromptText,
+      lastAssistantTimestamp: null,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCacheReadTokens: 0,
+      totalCacheCreateTokens: 0,
+      assistantCount: currentTurnAssistantCount,
+      toolCallCount: currentTurnToolCalls,
+    });
+  }
+
+  return {
+    sessionId: sessionFile.sessionId,
+    filePath: sessionFile.filePath,
+    projectDir: sessionFile.projectDir,
+    projectName: sessionFile.projectName,
+    source: "cursor",
+    title,
+    turns,
+    toolCallsByName,
+    skillCallsByName,
+    firstTimestamp: sessionFile.mtime,
+    lastTimestamp: sessionFile.mtime,
+  };
+}
+
+async function parseClaudeSession(
   sessionFile: SessionFile
 ): Promise<SessionData> {
   const seenUuids = new Set<string>();
@@ -266,6 +434,7 @@ export async function parseSession(
     filePath: sessionFile.filePath,
     projectDir: sessionFile.projectDir,
     projectName: sessionFile.projectName,
+    source: "claude",
     title,
     turns,
     toolCallsByName,

@@ -13,6 +13,7 @@ export function computeMetrics(
     return {
       sessionId: session.sessionId,
       projectName: session.projectName,
+      source: session.source,
       title: session.title,
       turnCount: 0,
       inferenceTimeMs: 0,
@@ -104,6 +105,7 @@ export function computeMetrics(
   return {
     sessionId: session.sessionId,
     projectName: session.projectName,
+    source: session.source,
     title: session.title,
     turnCount: turns.length,
     inferenceTimeMs,

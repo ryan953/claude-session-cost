@@ -73,6 +73,7 @@ export interface SessionData {
   filePath: string;
   projectDir: string;
   projectName: string;
+  source: SessionSource;
   title: string;
   turns: Turn[];
   toolCallsByName: Map<string, { count: number; totalTokens: number }>;
@@ -84,6 +85,7 @@ export interface SessionData {
 export interface SessionMetrics {
   sessionId: string;
   projectName: string;
+  source: SessionSource;
   title: string;
   turnCount: number;
   inferenceTimeMs: number;
@@ -111,10 +113,13 @@ export interface ToolCallStat {
   totalTokens: number;
 }
 
+export type SessionSource = "claude" | "cursor";
+
 export interface SessionFile {
   filePath: string;
   projectDir: string;
   projectName: string;
   sessionId: string;
   mtime: Date;
+  source: SessionSource;
 }
